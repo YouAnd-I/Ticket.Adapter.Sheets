@@ -152,6 +152,8 @@ public class SheetsClientTests
         Assert.Equal("", NeonDump.Cell(null)!.GetValue<string>());
         Assert.Equal("", NeonDump.Cell(DBNull.Value)!.GetValue<string>());
         Assert.Equal(42L, NeonDump.Cell(42L)!.GetValue<long>());
+        Assert.Equal("407442087664156674", NeonDump.Cell(407442087664156674L)!.GetValue<string>());
+        Assert.Equal("-407442087664156674", NeonDump.Cell(-407442087664156674L)!.GetValue<string>());
         Assert.True(NeonDump.Cell(true)!.GetValue<bool>());
         Assert.Equal("x", NeonDump.Cell("x")!.GetValue<string>());
         Assert.Equal("2026-01-02 03:04:05",

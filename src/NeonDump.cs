@@ -62,7 +62,9 @@ public static class NeonDump
     {
         null or DBNull => JsonValue.Create(""),
         bool flag => JsonValue.Create(flag),
-        long number => JsonValue.Create(number),
+        long number => number is > 9007199254740991L or < -9007199254740991L
+            ? JsonValue.Create(number.ToString())
+            : JsonValue.Create(number),
         int number => JsonValue.Create(number),
         short number => JsonValue.Create(number),
         double number => JsonValue.Create(number),
