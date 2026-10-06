@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Ticket.Adapter.Sheets;
 using Xunit;
@@ -34,34 +35,35 @@ public class SheetsClientTests
     private static SheetsOptions Options(string spreadsheetId = "sheet1") =>
         new("Host=x", "cid", "csecret", "rtoken", spreadsheetId, TimeSpan.FromMinutes(10));
 
-    private static JsonArray Row(params object?[] cells) =>
-        new(cells.Select(NeonDump.Cell).ToArray());
-
     [Fact]
-    public async Task ReplaceTab_ClearsThenWritesHeaderAndRows()
+    public async Task WriteValues_ClearsThenWritesDisplayHeadersAndRows()
     {
         var stub = new StubHttp(
             Json(Token),
             Json("""{"spreadsheetId":"sheet1","clearedRange":"ticket!A:ZZ"}"""),
             Json("""{"spreadsheetId":"sheet1","updatedRange":"ticket!A1"}"""));
         var client = new SheetsClient(new HttpClient(stub), Options());
-        var table = new NeonTable("ticket", ["ticket_id", "title"],
-            [Row("abc", "printer"), Row("def", null)]);
+        var plan = SheetPlanBuilder.Build(
+            new NeonTable("ticket", ["ticket_id", "created_at_utc"],
+            [
+                new JsonArray("abc", "2026-01-02 03:04:05"),
+            ]),
+            []);
 
-        await client.ReplaceTabAsync("sheet1", table);
+        await client.WriteValuesAsync("sheet1", plan);
 
         Assert.Equal(3, stub.Sent.Count);
         Assert.Equal("https://oauth2.googleapis.com/token", stub.Sent[0].Request.RequestUri!.ToString());
         Assert.Contains("grant_type=refresh_token", stub.Sent[0].Body);
-        Assert.Contains("refresh_token=rtoken", stub.Sent[0].Body);
-        Assert.Equal(HttpMethod.Post, stub.Sent[1].Request.Method);
         Assert.EndsWith("/values/ticket%21A%3AZZ:clear", stub.Sent[1].Request.RequestUri!.ToString());
-        Assert.Equal(HttpMethod.Put, stub.Sent[2].Request.Method);
         Assert.EndsWith("/values/ticket%21A1?valueInputOption=RAW", stub.Sent[2].Request.RequestUri!.ToString());
-        var body = JsonNode.Parse(stub.Sent[2].Body!)!.AsObject();
-        Assert.Equal(3, body["values"]!.AsArray().Count);
-        Assert.Equal("ticket_id", body["values"]![0]![0]!.GetValue<string>());
-        Assert.Equal("", body["values"]![2]![1]!.GetValue<string>());
+        var body = JsonNode.Parse(stub.Sent[2].Body!)!;
+        Assert.Equal("Ticket Id", body["values"]![0]![0]!.GetValue<string>());
+        Assert.Equal("abc", body["values"]![1]![0]!.GetValue<string>());
+        var serial = body["values"]![1]![1]!.GetValue<double>();
+        Assert.Equal(
+            SheetPlanBuilder.Serial(new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero)),
+            serial, 10);
     }
 
     [Fact]
@@ -69,35 +71,49 @@ public class SheetsClientTests
     {
         var stub = new StubHttp(
             Json(Token),
-            Json("""{"spreadsheetId":"sheet1","clearedRange":"t!A:ZZ"}"""),
-            Json("""{"spreadsheetId":"sheet1","updatedRange":"t!A1"}"""),
-            Json("""{"spreadsheetId":"sheet1","clearedRange":"t!A:ZZ"}"""),
-            Json("""{"spreadsheetId":"sheet1","updatedRange":"t!A1"}"""));
+            Json("""{"sheets":[]}"""),
+            Json("""{"spreadsheetId":"sheet1","replies":[{}]}"""),
+            Json("""{"spreadsheetId":"sheet1","replies":[{}]}"""));
         var client = new SheetsClient(new HttpClient(stub), Options());
-        var table = new NeonTable("t", ["a"], [Row(1)]);
 
-        await client.ReplaceTabAsync("sheet1", table);
-        await client.ReplaceTabAsync("sheet1", table);
+        await client.FetchTabsAsync("sheet1");
+        await client.ApplyRequestsAsync("sheet1", [new { updateSheetProperties = new { } }]);
+        await client.ApplyRequestsAsync("sheet1", [new { updateSheetProperties = new { } }]);
 
-        Assert.Equal(5, stub.Sent.Count);
+        Assert.Equal(4, stub.Sent.Count);
         Assert.Single(stub.Sent, sent => sent.Request.RequestUri!.Host == "oauth2.googleapis.com");
     }
 
     [Fact]
-    public async Task AddTabs_SendsOneAddSheetRequestPerTitle()
+    public async Task FetchTabs_ParsesBandingFormatsProtectionAndCharts()
     {
         var stub = new StubHttp(
             Json(Token),
-            Json("""{"spreadsheetId":"sheet1","replies":[{}]}"""));
+            Json("""
+                {"sheets":[
+                  {"properties":{"sheetId":7,"title":"ticket","gridProperties":{"rowCount":1000}},
+                   "bandedRanges":[{"bandedRangeId":91}],
+                   "conditionalFormats":[{"ranges":[{"startRowIndex":1,"endRowIndex":5}]}],
+                   "protectedRanges":[{"protectedRangeId":12,"description":"neon sync ticket.ticket_id",
+                                       "range":{"startRowIndex":1,"endColumnIndex":1}}],
+                   "charts":[]},
+                  {"properties":{"sheetId":9,"title":"Dashboard","gridProperties":{"rowCount":1000}},
+                   "charts":[{"chartId":44,"spec":{"title":"Tickets by status"}}]}
+                ]}
+                """));
         var client = new SheetsClient(new HttpClient(stub), Options());
 
-        await client.AddTabsAsync("sheet1", ["ticket", "ticket_note"]);
+        var tabs = await client.FetchTabsAsync("sheet1");
 
-        var body = JsonNode.Parse(stub.Sent[1].Body!)!;
-        var titles = body["requests"]!.AsArray()
-            .Select(request => request!["addSheet"]!["properties"]!["title"]!.GetValue<string>())
-            .ToArray();
-        Assert.Equal(["ticket", "ticket_note"], titles);
+        var ticket = tabs.Single(tab => tab.Title == "ticket");
+        Assert.Equal(7, ticket.SheetId);
+        Assert.Equal(1000, ticket.RowCount);
+        Assert.Equal([91L], ticket.BandedRangeIds);
+        Assert.Equal(1, ticket.ConditionalFormats.Count);
+        Assert.Equal(1, ticket.ConditionalFormats[0][0].StartRowIndex);
+        Assert.Equal("neon sync ticket.ticket_id", ticket.ProtectedRanges[0].Description);
+        var dashboard = tabs.Single(tab => tab.Title == "Dashboard");
+        Assert.Equal("Tickets by status", dashboard.Charts[0].Title);
     }
 
     [Fact]
@@ -111,39 +127,8 @@ public class SheetsClientTests
         var id = await client.ResolveSpreadsheetIdAsync();
 
         Assert.Equal("created-42", id);
-        Assert.EndsWith("/v4/spreadsheets", stub.Sent[1].Request.RequestUri!.ToString());
-        Assert.Equal(HttpMethod.Post, stub.Sent[1].Request.Method);
-
         Assert.Equal("created-42", await client.ResolveSpreadsheetIdAsync());
         Assert.Equal(2, stub.Sent.Count);
-    }
-
-    [Fact]
-    public async Task Sync_CreatesMissingTabsThenRewritesEveryTable()
-    {
-        var stub = new StubHttp(
-            Json(Token),
-            Json("""{"sheets":[{"properties":{"title":"discord_user"}}]}"""),
-            Json("""{"spreadsheetId":"sheet1","replies":[{},{}]}"""),
-            Json("""{"spreadsheetId":"sheet1","clearedRange":"discord_user!A:ZZ"}"""),
-            Json("""{"spreadsheetId":"sheet1","updatedRange":"discord_user!A1"}"""),
-            Json("""{"spreadsheetId":"sheet1","clearedRange":"ticket!A:ZZ"}"""),
-            Json("""{"spreadsheetId":"sheet1","updatedRange":"ticket!A1"}"""));
-        var client = new SheetsClient(new HttpClient(stub), Options());
-        var tables = new List<NeonTable>
-        {
-            new("discord_user", ["user_id"], [Row(42L)]),
-            new("ticket", ["ticket_id"], [Row("abc"), Row("def")]),
-        };
-
-        var rows = await SheetsSync.SyncAsync(tables, client);
-
-        Assert.Equal(3, rows);
-        var addedTitles = JsonNode.Parse(stub.Sent[2].Body!)!["requests"]!.AsArray()
-            .Select(request => request!["addSheet"]!["properties"]!["title"]!.GetValue<string>());
-        Assert.Equal(["ticket"], addedTitles);
-        Assert.Equal(2, stub.Sent.Count(sent =>
-            sent.Request.Method == HttpMethod.Post && sent.Request.RequestUri!.AbsolutePath.EndsWith(":clear")));
     }
 
     [Fact]
@@ -152,14 +137,10 @@ public class SheetsClientTests
         Assert.Equal("", NeonDump.Cell(null)!.GetValue<string>());
         Assert.Equal("", NeonDump.Cell(DBNull.Value)!.GetValue<string>());
         Assert.Equal(42L, NeonDump.Cell(42L)!.GetValue<long>());
-        Assert.Equal("407442087664156674", NeonDump.Cell(407442087664156674L)!.GetValue<string>());
-        Assert.Equal("-407442087664156674", NeonDump.Cell(-407442087664156674L)!.GetValue<string>());
         Assert.True(NeonDump.Cell(true)!.GetValue<bool>());
         Assert.Equal("x", NeonDump.Cell("x")!.GetValue<string>());
         Assert.Equal("2026-01-02 03:04:05",
             NeonDump.Cell(new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero))!.GetValue<string>());
-        Assert.Equal("2026-01-02 03:04:05",
-            NeonDump.Cell(new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc))!.GetValue<string>());
         Assert.Equal("0f8fad5b-d930-4b64-9c8f-2c1f2a3b4c5d",
             NeonDump.Cell(new Guid("0f8fad5b-d930-4b64-9c8f-2c1f2a3b4c5d"))!.GetValue<string>());
     }

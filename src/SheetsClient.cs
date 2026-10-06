@@ -8,6 +8,10 @@ namespace Ticket.Adapter.Sheets;
 public sealed class SheetsClient(HttpClient http, SheetsOptions options)
 {
     private const int ChunkRows = 5000;
+    private const string StateFields =
+        "sheets(properties(sheetId,title,gridProperties(rowCount)),bandedRanges(bandedRangeId)," +
+        "conditionalFormats(ranges),protectedRanges(protectedRangeId,description,range)," +
+        "charts(chartId,spec(title)))";
 
     private string? _accessToken;
     private DateTimeOffset _accessTokenExpires;
@@ -25,14 +29,12 @@ public sealed class SheetsClient(HttpClient http, SheetsOptions options)
         return id;
     }
 
-    public async Task<List<string>> TabTitlesAsync(string id, CancellationToken ct = default)
+    public async Task<IReadOnlyList<SheetTabState>> FetchTabsAsync(string id, CancellationToken ct = default)
     {
         using var json = await SendAsync(HttpMethod.Get,
-            $"https://sheets.googleapis.com/v4/spreadsheets/{id}?fields=sheets%2Fproperties%2Ftitle",
+            $"https://sheets.googleapis.com/v4/spreadsheets/{id}?fields={Uri.EscapeDataString(StateFields)}",
             null, ct).ConfigureAwait(false);
-        return json.RootElement.GetProperty("sheets").EnumerateArray()
-            .Select(sheet => sheet.GetProperty("properties").GetProperty("title").GetString()!)
-            .ToList();
+        return SheetStateParser.Parse(json);
     }
 
     public async Task AddTabsAsync(string id, IEnumerable<string> titles, CancellationToken ct = default)
@@ -43,23 +45,52 @@ public sealed class SheetsClient(HttpClient http, SheetsOptions options)
             JsonSerializer.Serialize(new { requests }), ct).ConfigureAwait(false);
     }
 
-    public async Task ReplaceTabAsync(string id, NeonTable table, CancellationToken ct = default)
+    public async Task ApplyRequestsAsync(
+        string id, IEnumerable<object> requests, CancellationToken ct = default)
     {
-        using (await SendAsync(HttpMethod.Post,
-            $"https://sheets.googleapis.com/v4/spreadsheets/{id}/values/{Range($"{table.Name}!A:ZZ")}:clear",
-            "{}", ct).ConfigureAwait(false)) { }
+        using var json = await SendAsync(HttpMethod.Post,
+            $"https://sheets.googleapis.com/v4/spreadsheets/{id}:batchUpdate",
+            JsonSerializer.Serialize(new { requests }), ct).ConfigureAwait(false);
+    }
 
+    public async Task WriteValuesAsync(string id, SheetPlan plan, CancellationToken ct = default)
+    {
+        await ClearAsync(id, plan.Tab, ct).ConfigureAwait(false);
+        await WriteChunkedAsync(id, plan.Tab, plan.Headers, plan.Rows, ct).ConfigureAwait(false);
+    }
+
+    public async Task WriteMatrixAsync(
+        string id, string tab, JsonArray matrix, CancellationToken ct = default)
+    {
+        await ClearAsync(id, tab, ct).ConfigureAwait(false);
+        using var json = await SendAsync(HttpMethod.Put,
+            $"https://sheets.googleapis.com/v4/spreadsheets/{id}/values/{Range($"{tab}!A1")}?valueInputOption=RAW",
+            JsonSerializer.Serialize(new { values = matrix }), ct).ConfigureAwait(false);
+    }
+
+    private async Task ClearAsync(string id, string tab, CancellationToken ct)
+    {
+        using var json = await SendAsync(HttpMethod.Post,
+            $"https://sheets.googleapis.com/v4/spreadsheets/{id}/values/{Range($"{tab}!A:ZZ")}:clear",
+            "{}", ct).ConfigureAwait(false);
+    }
+
+    private async Task WriteChunkedAsync(
+        string id, string tab, IReadOnlyList<string> headers, IReadOnlyList<JsonArray> rows,
+        CancellationToken ct)
+    {
         var offset = 0;
-        foreach (var chunk in table.Rows.Chunk(ChunkRows))
+        foreach (var chunk in rows.Chunk(ChunkRows))
         {
             var values = new JsonArray();
             if (offset == 0)
-                values.Add(new JsonArray(table.Columns.Select(column => (JsonNode?)column).ToArray()));
+                values.Add(new JsonArray(
+                    headers.Select(header => (JsonNode?)header).ToArray()));
             foreach (var row in chunk)
                 values.Add(row.DeepClone());
 
             using var json = await SendAsync(HttpMethod.Put,
-                $"https://sheets.googleapis.com/v4/spreadsheets/{id}/values/{Range($"{table.Name}!A{offset + 1}")}?valueInputOption=RAW",
+                $"https://sheets.googleapis.com/v4/spreadsheets/{id}/values/{Range($"{tab}!A{offset + 1}")}?valueInputOption=RAW",
                 JsonSerializer.Serialize(new { values }), ct).ConfigureAwait(false);
             offset += chunk.Length;
         }
