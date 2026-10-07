@@ -45,7 +45,8 @@ public static class SheetsPresentation
         var requests = new List<object>();
         var columns = plan.Columns.Length;
         var dataRows = plan.Rows.Count;
-        var sheetRows = Math.Max(state.RowCount, dataRows + 1);
+        var tableRows = dataRows + 1;
+        var sheetRows = Math.Max(state.RowCount, tableRows);
 
         requests.Add(new
         {
@@ -64,7 +65,7 @@ public static class SheetsPresentation
         {
             updateDimensionProperties = new
             {
-                range = new { sheetId, dimension = "ROWS", startIndex = 0, endIndex = Math.Max(dataRows, 1) },
+                range = new { sheetId, dimension = "ROWS", startIndex = 0, endIndex = tableRows },
                 properties = new { pixelSize = 20 },
                 fields = "pixelSize",
             },
@@ -142,7 +143,7 @@ public static class SheetsPresentation
             {
                 bandedRange = new
                 {
-                    range = Grid(sheetId, 0, Math.Max(dataRows, 1), 0, columns),
+                    range = Grid(sheetId, 0, tableRows, 0, columns),
                     rowProperties = new
                     {
                         headerColorStyle = Palette.Color(Palette.Header),
@@ -153,10 +154,10 @@ public static class SheetsPresentation
             },
         });
 
-        requests.Add(new { setBasicFilter = new { filter = new { range = Grid(sheetId, 0, Math.Max(dataRows, 1), 0, columns) } } });
+        requests.Add(new { setBasicFilter = new { filter = new { range = Grid(sheetId, 0, tableRows, 0, columns) } } });
 
         for (var i = state.ConditionalFormats.Count - 1; i >= 0; i--)
-            if (state.ConditionalFormats[i].Any(range => Intersects(range, columns, Math.Max(dataRows, 1))))
+            if (state.ConditionalFormats[i].Any(range => Intersects(range, columns, tableRows)))
                 requests.Add(new { deleteConditionalFormatRule = new { sheetId, index = i } });
         AddCodeRules(requests, sheetId, plan, Palette.Status, Palette.Priority);
 

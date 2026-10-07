@@ -73,6 +73,31 @@ public class SheetsPresentationTests
     }
 
     [Fact]
+    public void TableRequests_BandingFilterAndHeightsCoverEveryDataRow()
+    {
+        var plan = Plan();
+        var requests = SheetsPresentation.TableRequests(7, plan, State());
+
+        var banding = Request(requests.First(request => RequestKind(request) == "addBanding"), "addBanding")
+            .GetProperty("bandedRange").GetProperty("range");
+        Assert.Equal(0, banding.GetProperty("startRowIndex").GetInt32());
+        Assert.Equal(plan.Rows.Count + 1, banding.GetProperty("endRowIndex").GetInt32());
+
+        var filter = Request(requests.First(request => RequestKind(request) == "setBasicFilter"), "setBasicFilter")
+            .GetProperty("filter").GetProperty("range");
+        Assert.Equal(0, filter.GetProperty("startRowIndex").GetInt32());
+        Assert.Equal(plan.Rows.Count + 1, filter.GetProperty("endRowIndex").GetInt32());
+
+        var heights = requests.Select(request => RequestKind(request) == "updateDimensionProperties"
+                ? (JsonElement?)Request(request, "updateDimensionProperties") : null)
+            .OfType<JsonElement>()
+            .Single(dimension => dimension.GetProperty("range").GetProperty("dimension").GetString() == "ROWS")
+            .GetProperty("range");
+        Assert.Equal(0, heights.GetProperty("startIndex").GetInt32());
+        Assert.Equal(plan.Rows.Count + 1, heights.GetProperty("endIndex").GetInt32());
+    }
+
+    [Fact]
     public void TableRequests_DeleteStaleBandingAndIntersectingConditionalRules()
     {
         var state = State(
