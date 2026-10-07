@@ -119,11 +119,11 @@ public static class SheetsPresentation
             });
 
             if (column.Kind is ColumnKind.Boolean)
-                requests.Add(Validation(sheetId, 1, sheetRows, i,
+                requests.Add(Validation(sheetId, 1, tableRows, i,
                     new { condition = new { type = "BOOLEAN" } }));
 
             if (column.Dropdown is { Count: > 0 } codes)
-                requests.Add(Validation(sheetId, 1, sheetRows, i, new
+                requests.Add(Validation(sheetId, 1, tableRows, i, new
                 {
                     condition = new
                     {
@@ -218,7 +218,59 @@ public static class SheetsPresentation
                     fields = "userEnteredFormat",
                 },
             },
+            new
+            {
+                repeatCell = new
+                {
+                    range = Grid(sheetId, 3, 4, 0, DashboardModel.Width),
+                    cell = new JsonObject
+                    {
+                        ["userEnteredFormat"] = new JsonObject
+                        {
+                            ["textFormat"] = new JsonObject
+                            {
+                                ["bold"] = true,
+                                ["fontSize"] = 9,
+                                ["foregroundColorStyle"] = Palette.Color(Palette.Muted),
+                            },
+                        },
+                    },
+                    fields = "userEnteredFormat",
+                },
+            },
+            new
+            {
+                repeatCell = new
+                {
+                    range = Grid(sheetId, 4, 5, 0, DashboardModel.Width),
+                    cell = new JsonObject
+                    {
+                        ["userEnteredFormat"] = new JsonObject
+                        {
+                            ["textFormat"] = new JsonObject
+                            {
+                                ["bold"] = true,
+                                ["fontSize"] = 18,
+                                ["foregroundColorStyle"] = Palette.Color(Palette.Accent),
+                            },
+                        },
+                    },
+                    fields = "userEnteredFormat",
+                },
+            },
         };
+
+        int[] widths = [110, 300, 90, 100, 130, 150, 100, 80];
+        for (var i = 0; i < widths.Length; i++)
+            requests.Add(new
+            {
+                updateDimensionProperties = new
+                {
+                    range = new { sheetId, dimension = "COLUMNS", startIndex = i, endIndex = i + 1 },
+                    properties = new { pixelSize = widths[i] },
+                    fields = "pixelSize",
+                },
+            });
 
         foreach (var header in dashboard.SectionHeaders)
             requests.Add(new
@@ -244,13 +296,61 @@ public static class SheetsPresentation
                 },
             });
 
+        if (dashboard.OpenTickets.Count > 0)
+        {
+            var first = dashboard.OpenHeaderRowIndex + 2;
+            var last = first + dashboard.OpenTickets.Count;
+            requests.Add(new
+            {
+                repeatCell = new
+                {
+                    range = Grid(sheetId, first, last, 5, 6),
+                    cell = new JsonObject
+                    {
+                        ["userEnteredFormat"] = new JsonObject
+                        {
+                            ["horizontalAlignment"] = "CENTER",
+                            ["verticalAlignment"] = "MIDDLE",
+                            ["numberFormat"] = new JsonObject
+                            {
+                                ["type"] = "DATE_TIME",
+                                ["pattern"] = "yyyy-mm-dd hh:mm:ss",
+                            },
+                        },
+                    },
+                    fields = "userEnteredFormat",
+                },
+            });
+            requests.Add(new
+            {
+                repeatCell = new
+                {
+                    range = Grid(sheetId, first, last, 6, 7),
+                    cell = new JsonObject
+                    {
+                        ["userEnteredFormat"] = new JsonObject
+                        {
+                            ["numberFormat"] = new JsonObject
+                            {
+                                ["type"] = "NUMBER",
+                                ["pattern"] = "0.0",
+                            },
+                        },
+                    },
+                    fields = "userEnteredFormat",
+                },
+            });
+            AddRuleSet(requests, sheetId, Grid(sheetId, first, last, 2, 3), Palette.Priority);
+            AddRuleSet(requests, sheetId, Grid(sheetId, first, last, 3, 4), Palette.Status);
+        }
+
         if (dashboard.Recent.Count > 0)
             requests.Add(new
             {
                 repeatCell = new
                 {
-                    range = Grid(sheetId, dashboard.RecentHeaderRowIndex + 1,
-                        dashboard.RecentHeaderRowIndex + 1 + dashboard.Recent.Count, 3, 4),
+                    range = Grid(sheetId, dashboard.RecentHeaderRowIndex + 2,
+                        dashboard.RecentHeaderRowIndex + 2 + dashboard.Recent.Count, 3, 4),
                     cell = new JsonObject
                     {
                         ["userEnteredFormat"] = new JsonObject
@@ -271,31 +371,37 @@ public static class SheetsPresentation
         for (var i = state.ConditionalFormats.Count - 1; i >= 0; i--)
             requests.Add(new { deleteConditionalFormatRule = new { sheetId, index = i } });
         if (dashboard.Status.Count > 0)
+        {
             AddRuleSet(requests, sheetId,
-                Grid(sheetId, dashboard.StatusRowsStart, dashboard.StatusRowsStart + dashboard.Status.Count, 0, 1),
+                Grid(sheetId, dashboard.CountsRowsStart, dashboard.CountsRowsStart + dashboard.Status.Count, 3, 4),
                 Palette.Status);
-        if (dashboard.Recent.Count > 0)
             AddRuleSet(requests, sheetId,
-                Grid(sheetId, dashboard.RecentHeaderRowIndex + 1,
-                    dashboard.RecentHeaderRowIndex + 1 + dashboard.Recent.Count, 1, 2),
+                Grid(sheetId, dashboard.RecentHeaderRowIndex + 2,
+                    dashboard.RecentHeaderRowIndex + 2 + dashboard.Recent.Count, 1, 2),
                 Palette.Status);
+        }
 
         foreach (var chart in state.Charts.Where(chart => dashboard.ManagedChartTitles.Contains(chart.Title)))
             requests.Add(new { deleteEmbeddedObject = new { objectId = chart.ChartId } });
 
         if (dashboard.Status.Count > 0)
-            requests.Add(StatusChart(sheetId, dashboard));
+            requests.Add(BarChart(sheetId, dashboard,
+                DashboardModel.StatusChartTitle, dashboard.Status.Count, 3, 4, 3));
         if (dashboard.Priority.Count > 0)
             requests.Add(PriorityChart(sheetId, dashboard));
+        if (dashboard.Solvers.Count > 0)
+            requests.Add(BarChart(sheetId, dashboard,
+                DashboardModel.SolvedChartTitle, dashboard.Solvers.Count, 0, 1, 37));
 
         return requests;
     }
 
 
-    private static object StatusChart(int sheetId, DashboardModel dashboard)
+    private static object BarChart(int sheetId, DashboardModel dashboard,
+        string title, int count, int domainColumn, int seriesColumn, int anchorRow)
     {
-        var first = dashboard.StatusRowsStart;
-        var last = first + dashboard.Status.Count;
+        var first = dashboard.SolvedHeaderRowIndex + 1;
+        var last = first + count;
         return new
         {
             addChart = new
@@ -304,20 +410,20 @@ public static class SheetsPresentation
                 {
                     spec = new
                     {
-                        title = DashboardModel.StatusChartTitle,
+                        title,
                         basicChart = new
                         {
                             chartType = "COLUMN",
                             legendPosition = "NO_LEGEND",
                             domains = new[]
                             {
-                                new { domain = Source(sheetId, first, last, 0, 1) },
+                                new { domain = Source(sheetId, first, last, domainColumn, domainColumn + 1) },
                             },
                             series = new[]
                             {
                                 new
                                 {
-                                    series = Source(sheetId, first, last, 1, 2),
+                                    series = Source(sheetId, first, last, seriesColumn, seriesColumn + 1),
                                     targetAxis = "LEFT_AXIS",
                                     colorStyle = Palette.Color(Palette.Accent),
                                 },
@@ -329,7 +435,7 @@ public static class SheetsPresentation
                     {
                         overlayPosition = new
                         {
-                            anchorCell = new { sheetId, rowIndex = 3, columnIndex = 7 },
+                            anchorCell = new { sheetId, rowIndex = anchorRow, columnIndex = 9 },
                         },
                     },
                 },
@@ -339,7 +445,7 @@ public static class SheetsPresentation
 
     private static object PriorityChart(int sheetId, DashboardModel dashboard)
     {
-        var first = dashboard.PriorityRowsStart;
+        var first = dashboard.SolvedHeaderRowIndex + 1;
         var last = first + dashboard.Priority.Count;
         return new
         {
@@ -353,8 +459,8 @@ public static class SheetsPresentation
                         pieChart = new
                         {
                             legendPosition = "RIGHT_LEGEND",
-                            domain = Source(sheetId, first, last, 3, 4),
-                            series = Source(sheetId, first, last, 4, 5),
+                            domain = Source(sheetId, first, last, 6, 7),
+                            series = Source(sheetId, first, last, 7, 8),
                             pieHole = 0.55,
                         },
                     },
@@ -362,7 +468,7 @@ public static class SheetsPresentation
                     {
                         overlayPosition = new
                         {
-                            anchorCell = new { sheetId, rowIndex = 20, columnIndex = 7 },
+                            anchorCell = new { sheetId, rowIndex = 20, columnIndex = 9 },
                         },
                     },
                 },

@@ -194,7 +194,7 @@ public class SheetsPresentationTests
             .Select(request => Request(request, "deleteEmbeddedObject").GetProperty("objectId").GetInt64())
             .ToList();
         Assert.Equal([44L], deletions);
-        Assert.Equal(2, requests.Count(request => RequestKind(request) == "addChart"));
+        Assert.Equal(3, requests.Count(request => RequestKind(request) == "addChart"));
         Assert.Contains("\"index\":0", body);
         Assert.Contains("pieHole", body);
     }

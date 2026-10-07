@@ -9,23 +9,73 @@ public class SheetsDashboardTests
     private static JsonArray Row(params object?[] cells) =>
         new(cells.Select(NeonDump.Cell).ToArray());
 
-    private static List<NeonTable> Dump() =>
-    [
-        new NeonTable("priority", ["priority_code"], [Row("urgent"), Row("no-rush"), Row("report")]),
-        new NeonTable("ticket", ["ticket_id", "priority_code", "title"],
+    private static string At(DateTimeOffset moment) => moment.ToString("yyyy-MM-dd HH:mm:ss");
+
+    private static List<NeonTable> Dump()
+    {
+        var now = DateTimeOffset.UtcNow;
+        return
         [
-            Row("abc", "urgent", "printer"),
-            Row("def", "no-rush", "mouse"),
-            Row("ghi", "urgent", "screen"),
-        ]),
-        new NeonTable("ticket_status_event", ["ticket_id", "status_code", "occurred_at_utc"],
-        [
-            Row("abc", "open", "2026-01-01 00:00:00"),
-            Row("abc", "planned", "2026-01-02 00:00:00"),
-            Row("abc", "complete", "2026-01-03 00:00:00"),
-            Row("def", "open", "2026-01-04 00:00:00"),
-        ]),
-    ];
+            new NeonTable("priority", ["priority_code"], [Row("urgent"), Row("no-rush"), Row("report")]),
+            new NeonTable("it_staff", ["user_id", "display_name", "handles", "active"],
+                [Row(100, "Alice", "wifi, VPN", true)]),
+            new NeonTable("discord_user", ["user_id", "username"],
+                [Row(100, "alice99"), Row(200, "bob")]),
+            new NeonTable("ticket",
+                ["ticket_id", "priority_code", "title", "assignee_user_id", "created_at_utc"],
+            [
+                Row("abc", "urgent", "printer", 100, "2026-01-01 00:00:00"),
+                Row("def", "no-rush", "mouse", null, At(now.AddDays(-2))),
+                Row("ghi", "urgent", "screen", 200, At(now.AddHours(-2))),
+            ]),
+            new NeonTable("ticket_status_event", ["ticket_id", "status_code", "occurred_at_utc"],
+            [
+                Row("abc", "open", "2026-01-01 00:00:00"),
+                Row("abc", "planned", "2026-01-02 00:00:00"),
+                Row("abc", "complete", "2026-01-03 00:00:00"),
+                Row("def", "open", "2026-01-04 00:00:00"),
+                Row("ghi", "planned", "2026-01-05 00:00:00"),
+            ]),
+        ];
+    }
+
+    [Fact]
+    public void Build_CountsOpenStalePlannedAndComplete()
+    {
+        var dashboard = SheetsDashboard.Build(Dump());
+
+        Assert.Equal(2, dashboard.OpenTotal);
+        Assert.Equal(1, dashboard.OpenStale);
+        Assert.Equal(1, dashboard.Planned);
+        Assert.Equal(1, dashboard.Complete);
+    }
+
+    [Fact]
+    public void Build_OpenTickets_AreOldestFirst_WithStaffNamesAndAge()
+    {
+        var dashboard = SheetsDashboard.Build(Dump());
+
+        var open = dashboard.OpenTickets;
+        Assert.Equal(2, open.Count);
+        Assert.Equal("def", open[0].TicketId);
+        Assert.Equal("open", open[0].Status);
+        Assert.Null(open[0].Assignee);
+        Assert.True(open[0].AgeDays >= 1.9);
+        Assert.Equal("ghi", open[1].TicketId);
+        Assert.Equal("planned", open[1].Status);
+        Assert.Equal("bob", open[1].Assignee);
+        Assert.True(open[1].AgeDays < 1);
+    }
+
+    [Fact]
+    public void Build_Solvers_CountCompletedTicketsPerAssignee()
+    {
+        var dashboard = SheetsDashboard.Build(Dump());
+
+        var solver = Assert.Single(dashboard.Solvers);
+        Assert.Equal("Alice", solver.Staff);
+        Assert.Equal(1, solver.Solved);
+    }
 
     [Fact]
     public void Build_LatestStatusWins_PerTicket()
@@ -35,7 +85,7 @@ public class SheetsDashboardTests
         Assert.Equal(
         [
             new DashboardCounts("open", 1),
-            new DashboardCounts("planned", 0),
+            new DashboardCounts("planned", 1),
             new DashboardCounts("complete", 1),
             new DashboardCounts("reopened", 0),
             new DashboardCounts("unsolved", 0),
@@ -53,36 +103,55 @@ public class SheetsDashboardTests
     {
         var dashboard = SheetsDashboard.Build(Dump());
 
-        Assert.Equal(4, dashboard.Recent.Count);
-        Assert.Equal("def", dashboard.Recent[0].TicketId);
-        Assert.Equal("open", dashboard.Recent[0].Status);
-        Assert.Equal("no-rush", dashboard.Recent[0].Priority);
-        Assert.Equal("mouse", dashboard.Recent[0].Title);
-        Assert.Equal("complete", dashboard.Recent[1].Status);
-        Assert.Equal("printer", dashboard.Recent[1].Title);
+        Assert.Equal(5, dashboard.Recent.Count);
+        Assert.Equal("ghi", dashboard.Recent[0].TicketId);
+        Assert.Equal("planned", dashboard.Recent[0].Status);
+        Assert.Equal("urgent", dashboard.Recent[0].Priority);
+        Assert.Equal("screen", dashboard.Recent[0].Title);
+        Assert.Equal("complete", dashboard.Recent[2].Status);
+        Assert.Equal("printer", dashboard.Recent[2].Title);
     }
 
     [Fact]
-    public void Matrix_FillsBothCountBlocksAndRecentTable()
+    public void Matrix_DrawsCardsOpenListSolversBlocksAndRecent()
     {
         var dashboard = SheetsDashboard.Build(Dump());
         var matrix = dashboard.Matrix();
 
         Assert.Equal("NeonDB — IT Tickets", matrix[0]![0]!.GetValue<string>());
-        Assert.Equal("Status", matrix[3]![0]!.GetValue<string>());
-        Assert.Equal("Count", matrix[3]![1]!.GetValue<string>());
-        Assert.Equal("Priority", matrix[3]![3]!.GetValue<string>());
+        Assert.Equal("Open tickets", matrix[3]![0]!.GetValue<string>());
+        Assert.Equal("Unsolved > 1 day", matrix[3]![2]!.GetValue<string>());
+        Assert.Equal(2, matrix[4]![0]!.GetValue<int>());
+        Assert.Equal(1, matrix[4]![2]!.GetValue<int>());
+        Assert.Equal(1, matrix[4]![4]!.GetValue<int>());
+        Assert.Equal(1, matrix[4]![6]!.GetValue<int>());
 
-        Assert.Equal("open", matrix[4]![0]!.GetValue<string>());
-        Assert.Equal(1, matrix[4]![1]!.GetValue<int>());
-        Assert.Equal("urgent", matrix[4]![3]!.GetValue<string>());
-        Assert.Equal(2, matrix[4]![4]!.GetValue<int>());
+        Assert.Equal(6, dashboard.OpenHeaderRowIndex);
+        Assert.Equal("Open tickets — oldest first", matrix[6]![0]!.GetValue<string>());
+        Assert.Equal("Ticket", matrix[7]![0]!.GetValue<string>());
+        Assert.Equal("Age (days)", matrix[7]![6]!.GetValue<string>());
+        Assert.Equal("def", matrix[8]![0]!.GetValue<string>());
+        Assert.Equal("open", matrix[8]![3]!.GetValue<string>());
+        Assert.True(matrix[8]![6]!.GetValue<double>() >= 1.9);
+        Assert.Equal("ghi", matrix[9]![0]!.GetValue<string>());
+        Assert.Equal("bob", matrix[9]![4]!.GetValue<string>());
 
-        var recentHeader = dashboard.RecentHeaderRowIndex;
-        Assert.Equal("Ticket", matrix[recentHeader]![0]!.GetValue<string>());
-        Assert.Equal("def", matrix[recentHeader + 1]![0]!.GetValue<string>());
-        Assert.Equal("open", matrix[recentHeader + 1]![1]!.GetValue<string>());
-        Assert.True(matrix[recentHeader + 1]![3]!.GetValue<double>() > 40000);
+        var solved = dashboard.SolvedHeaderRowIndex;
+        Assert.Equal(11, solved);
+        Assert.Equal("Solved by staff", matrix[solved]![0]!.GetValue<string>());
+        Assert.Equal("Status", matrix[solved]![3]!.GetValue<string>());
+        Assert.Equal("Priority", matrix[solved]![6]!.GetValue<string>());
+        Assert.Equal("Staff", matrix[solved + 1]![0]!.GetValue<string>());
+        Assert.Equal("Alice", matrix[solved + 2]![0]!.GetValue<string>());
+        Assert.Equal(1, matrix[solved + 2]![1]!.GetValue<int>());
+        Assert.Equal("open", matrix[solved + 2]![3]!.GetValue<string>());
+        Assert.Equal(1, matrix[solved + 2]![4]!.GetValue<int>());
+
+        var recent = dashboard.RecentHeaderRowIndex;
+        Assert.True(recent > solved + 5);
+        Assert.Equal("Recent activity", matrix[recent]![0]!.GetValue<string>());
+        Assert.Equal("ghi", matrix[recent + 2]![0]!.GetValue<string>());
+        Assert.True(matrix[recent + 2]![3]!.GetValue<double>() > 40000);
     }
 
     [Fact]
@@ -90,6 +159,12 @@ public class SheetsDashboardTests
     {
         var dashboard = SheetsDashboard.Build([]);
 
+        Assert.Equal(0, dashboard.OpenTotal);
+        Assert.Equal(0, dashboard.OpenStale);
+        Assert.Equal(0, dashboard.Planned);
+        Assert.Equal(0, dashboard.Complete);
+        Assert.Empty(dashboard.OpenTickets);
+        Assert.Empty(dashboard.Solvers);
         Assert.Equal(
         [
             new DashboardCounts("open", 0),
@@ -212,21 +287,21 @@ public class SheetsDashboardTests
     {
         var stub = new StubSequence();
         var client = stub.Client;
-        var reverse = new RecordingReverse("ticket_category", "not_a_tab");
+        var reverse = new RecordingReverse("priority", "not_a_tab");
         var dump = new List<NeonTable>
         {
             new("ticket", ["ticket_id"], [Row("abc")]),
-            new("ticket_category", ["category_slug", "description", "priority_code"], []),
+            new("priority", ["priority_code", "description"], []),
         };
         stub.Replies(
             Json("""{"access_token":"tok","expires_in":3600,"token_type":"Bearer"}"""),
-            Json("""{"sheets":[{"properties":{"sheetId":1,"title":"ticket","gridProperties":{"rowCount":1000}}},{"properties":{"sheetId":2,"title":"ticket_category","gridProperties":{"rowCount":1000}}},{"properties":{"sheetId":3,"title":"Dashboard","gridProperties":{"rowCount":1000}}}]}"""),
-            Json("""{"range":"ticket_category!A1:ZZ","values":[["Category Slug","Description","Priority Code"],["network","wifi and VPN",""]]}"""),
+            Json("""{"sheets":[{"properties":{"sheetId":1,"title":"ticket","gridProperties":{"rowCount":1000}}},{"properties":{"sheetId":2,"title":"priority","gridProperties":{"rowCount":1000}}},{"properties":{"sheetId":3,"title":"Dashboard","gridProperties":{"rowCount":1000}}}]}"""),
+            Json("""{"range":"priority!A1:ZZ","values":[["Priority Code","Description"],["urgent","ping me now"]]}"""),
             Json("""{"spreadsheetId":"s","clearedRange":"ticket!A:ZZ"}"""),
             Json("""{"spreadsheetId":"s","updatedRange":"ticket!A1"}"""),
             Json("""{"spreadsheetId":"s","replies":[{}]}"""),
-            Json("""{"spreadsheetId":"s","clearedRange":"ticket_category!A:ZZ"}"""),
-            Json("""{"spreadsheetId":"s","updatedRange":"ticket_category!A1"}"""),
+            Json("""{"spreadsheetId":"s","clearedRange":"priority!A:ZZ"}"""),
+            Json("""{"spreadsheetId":"s","updatedRange":"priority!A1"}"""),
             Json("""{"spreadsheetId":"s","replies":[{}]}"""),
             Json("""{"spreadsheetId":"s","clearedRange":"Dashboard!A:ZZ"}"""),
             Json("""{"spreadsheetId":"s","updatedRange":"Dashboard!A1"}"""),
@@ -235,9 +310,9 @@ public class SheetsDashboardTests
         await SheetsSync.SyncAsync(dump, client, reverse);
 
         var applied = Assert.Single(reverse.Applied);
-        Assert.Equal(("ticket_category", 2), applied);
+        Assert.Equal(("priority", 2), applied);
         var readAt = stub.Sent.FindIndex(sent =>
-            sent.Request!.RequestUri!.AbsolutePath.Contains("/values/ticket_category"));
+            sent.Request!.RequestUri!.AbsolutePath.Contains("/values/priority"));
         var writeAt = stub.Sent.FindIndex(sent =>
             sent.Request!.RequestUri!.AbsolutePath.Contains("/values/ticket%21A1"));
         Assert.True(readAt >= 0 && writeAt > readAt);

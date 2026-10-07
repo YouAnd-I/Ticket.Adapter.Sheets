@@ -65,7 +65,8 @@ public sealed class SheetsClient(HttpClient http, SheetsOptions options)
                 .Select(cell => cell.ValueKind == JsonValueKind.String ? cell.GetString() : cell.ToString())
                 .ToList())
             .ToList();
-        while (rows.Count > 0 && rows[^1].All(cell => string.IsNullOrWhiteSpace(cell)))
+        while (rows.Count > 0 && rows[^1].All(cell =>
+                   string.IsNullOrWhiteSpace(cell) || cell.Trim() == "FALSE"))
             rows.RemoveAt(rows.Count - 1);
         return rows;
     }

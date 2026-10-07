@@ -132,6 +132,20 @@ public class SheetsClientTests
     }
 
     [Fact]
+    public async Task ReadTab_TrimsTrailingEmptyAndPhantomCheckboxRows()
+    {
+        var stub = new StubHttp(
+            Json(Token),
+            Json("""{"values":[["User Id","Active"],["100","TRUE"],["","FALSE"],["","FALSE"]]}"""));
+        var client = new SheetsClient(new HttpClient(stub), Options("sheet1"));
+
+        var rows = await client.ReadTabAsync("sheet1", "it_staff");
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("100", rows[1][0]);
+    }
+
+    [Fact]
     public void Cell_RendersValuesForSheets()
     {
         Assert.Equal("", NeonDump.Cell(null)!.GetValue<string>());
