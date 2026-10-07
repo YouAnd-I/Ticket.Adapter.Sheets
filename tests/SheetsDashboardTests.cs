@@ -193,4 +193,53 @@ public class SheetsDashboardTests
     {
         Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json"),
     };
+
+    private sealed class RecordingReverse(params string[] tabs) : IReverseSync
+    {
+        public IReadOnlyCollection<string> Tabs { get; } = tabs;
+        public List<(string Tab, int RowCount)> Applied { get; } = [];
+
+        public Task ApplyAsync(string tab, IReadOnlyList<IReadOnlyList<string?>> rows,
+            CancellationToken ct = default)
+        {
+            Applied.Add((tab, rows.Count));
+            return Task.CompletedTask;
+        }
+    }
+
+    [Fact]
+    public async Task Sync_ReverseAppliesConfigTabs_BeforeWritingValues()
+    {
+        var stub = new StubSequence();
+        var client = stub.Client;
+        var reverse = new RecordingReverse("ticket_category", "not_a_tab");
+        var dump = new List<NeonTable>
+        {
+            new("ticket", ["ticket_id"], [Row("abc")]),
+            new("ticket_category", ["category_slug", "description", "priority_code"], []),
+        };
+        stub.Replies(
+            Json("""{"access_token":"tok","expires_in":3600,"token_type":"Bearer"}"""),
+            Json("""{"sheets":[{"properties":{"sheetId":1,"title":"ticket","gridProperties":{"rowCount":1000}}},{"properties":{"sheetId":2,"title":"ticket_category","gridProperties":{"rowCount":1000}}},{"properties":{"sheetId":3,"title":"Dashboard","gridProperties":{"rowCount":1000}}}]}"""),
+            Json("""{"range":"ticket_category!A1:ZZ","values":[["Category Slug","Description","Priority Code"],["network","wifi and VPN",""]]}"""),
+            Json("""{"spreadsheetId":"s","clearedRange":"ticket!A:ZZ"}"""),
+            Json("""{"spreadsheetId":"s","updatedRange":"ticket!A1"}"""),
+            Json("""{"spreadsheetId":"s","replies":[{}]}"""),
+            Json("""{"spreadsheetId":"s","clearedRange":"ticket_category!A:ZZ"}"""),
+            Json("""{"spreadsheetId":"s","updatedRange":"ticket_category!A1"}"""),
+            Json("""{"spreadsheetId":"s","replies":[{}]}"""),
+            Json("""{"spreadsheetId":"s","clearedRange":"Dashboard!A:ZZ"}"""),
+            Json("""{"spreadsheetId":"s","updatedRange":"Dashboard!A1"}"""),
+            Json("""{"spreadsheetId":"s","replies":[{}]}"""));
+
+        await SheetsSync.SyncAsync(dump, client, reverse);
+
+        var applied = Assert.Single(reverse.Applied);
+        Assert.Equal(("ticket_category", 2), applied);
+        var readAt = stub.Sent.FindIndex(sent =>
+            sent.Request!.RequestUri!.AbsolutePath.Contains("/values/ticket_category"));
+        var writeAt = stub.Sent.FindIndex(sent =>
+            sent.Request!.RequestUri!.AbsolutePath.Contains("/values/ticket%21A1"));
+        Assert.True(readAt >= 0 && writeAt > readAt);
+    }
 }

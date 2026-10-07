@@ -53,6 +53,23 @@ public sealed class SheetsClient(HttpClient http, SheetsOptions options)
             JsonSerializer.Serialize(new { requests }), ct).ConfigureAwait(false);
     }
 
+    public async Task<IReadOnlyList<IReadOnlyList<string?>>> ReadTabAsync(
+        string id, string tab, CancellationToken ct = default)
+    {
+        using var json = await SendAsync(HttpMethod.Get,
+            $"https://sheets.googleapis.com/v4/spreadsheets/{id}/values/{Range($"{tab}!A1:ZZ")}",
+            null, ct).ConfigureAwait(false);
+        if (!json.RootElement.TryGetProperty("values", out var values)) return [];
+        var rows = values.EnumerateArray()
+            .Select(row => (IReadOnlyList<string?>)row.EnumerateArray()
+                .Select(cell => cell.ValueKind == JsonValueKind.String ? cell.GetString() : cell.ToString())
+                .ToList())
+            .ToList();
+        while (rows.Count > 0 && rows[^1].All(cell => string.IsNullOrWhiteSpace(cell)))
+            rows.RemoveAt(rows.Count - 1);
+        return rows;
+    }
+
     public async Task WriteValuesAsync(string id, SheetPlan plan, CancellationToken ct = default)
     {
         await ClearAsync(id, plan.Tab, ct).ConfigureAwait(false);
@@ -79,6 +96,17 @@ public sealed class SheetsClient(HttpClient http, SheetsOptions options)
         string id, string tab, IReadOnlyList<string> headers, IReadOnlyList<JsonArray> rows,
         CancellationToken ct)
     {
+        if (rows.Count == 0)
+        {
+            var headerOnly = new JsonArray();
+            headerOnly.Add(new JsonArray(
+                headers.Select(header => (JsonNode?)header).ToArray()));
+            using var headerJson = await SendAsync(HttpMethod.Put,
+                $"https://sheets.googleapis.com/v4/spreadsheets/{id}/values/{Range($"{tab}!A1")}?valueInputOption=RAW",
+                JsonSerializer.Serialize(new { values = headerOnly }), ct).ConfigureAwait(false);
+            return;
+        }
+
         var offset = 0;
         foreach (var chunk in rows.Chunk(ChunkRows))
         {

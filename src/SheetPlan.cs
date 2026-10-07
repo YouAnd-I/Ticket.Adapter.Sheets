@@ -79,7 +79,7 @@ public static class SheetPlanBuilder
 
     private static ColumnKind KindOf(string name, List<JsonArray> rows, int index)
     {
-        if (name.EndsWith("_at_utc", StringComparison.OrdinalIgnoreCase)) return ColumnKind.DateTime;
+        if (name.EndsWith("_utc", StringComparison.OrdinalIgnoreCase)) return ColumnKind.DateTime;
         if (name.EndsWith("_id", StringComparison.OrdinalIgnoreCase)) return ColumnKind.Identifier;
 
         var sawBoolean = false;

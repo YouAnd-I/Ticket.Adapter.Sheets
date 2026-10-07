@@ -3,7 +3,7 @@ using Npgsql;
 
 namespace Ticket.Adapter.Sheets;
 
-public sealed class SheetsSyncService(SheetsOptions options) : BackgroundService
+public sealed class SheetsSyncService(SheetsOptions options, IReverseSync? reverse = null) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -15,7 +15,7 @@ public sealed class SheetsSyncService(SheetsOptions options) : BackgroundService
         {
             try
             {
-                var rows = await SheetsSync.SyncAsync(db, sheets, stoppingToken).ConfigureAwait(false);
+                var rows = await SheetsSync.SyncAsync(db, sheets, reverse, stoppingToken).ConfigureAwait(false);
                 Console.WriteLine($"[sheets] synced {rows} rows");
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
